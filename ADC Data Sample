@@ -12,35 +12,36 @@
 #include "driverlib/pin_map.h"
 #include "driverlib/adc.h"
 
-uint32_t ADCData[8];
+uint32_t ADCDataRaw[8];
 int flag = 1;
-
-void StdioInit()
-{
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
-
-	GPIOPinConfigure(GPIO_PA0_U0RX);
-	GPIOPinConfigure(GPIO_PA1_U0TX);
-	GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-
-	UARTStdioConfig(0, 115200, 25000000);
-}
+uint8_t TempDataBuf[256];
+uint_fast32_t WriteIndex = 0;
 
 void ADCDataGet()
 {
 
 	ADCIntClear(ADC0_BASE, 0);
-	ADCSequenceDataGet(ADC0_BASE, 0, ADCData);
+	ADCSequenceDataGet(ADC0_BASE, 0, ADCDataRaw);
 	flag = 1;
-
-
-
-	//ADCIntEnable(ADC0_BASE, 0);
 
 }
 
+void WriteToBuffer()
+{
+	int y;
+	for ( y = 0; y < 8; y++)
+	{
+		TempDataBuf[WriteIndex] = ADCDataRaw[y]%64;
+		TempDataBuf[WriteIndex+1] = ADCDataRaw[y]>>6;
+		if (y%2 == 1)
+		{
+			TempDataBuf[WriteIndex] = TempDataBuf[WriteIndex] | 0b01000000;
+			TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b01000000;
+		}
+		WriteIndex = WriteIndex+2;
+	}
 
+}
 //***********************ADC Initialise **********************
 
 
@@ -83,18 +84,21 @@ void main()
 	SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN |
             SYSCTL_XTAL_25MHZ);
 
-	StdioInit();
+
 	ADCInit();
 
-	UARTprintf("Channel 1");
 
 	while (1)
 	{
 		if (flag == 1)
 		{
 
-			UARTprintf("%d\n", ADCData);
+			WriteToBuffer();
 			flag = 0;
+		}
+		if (WriteIndex >= 255)
+		{
+			WriteIndex = 0;
 		}
 	}
 
