@@ -81,7 +81,7 @@ uint32_t ui32Count = 0;
 uint_fast32_t ui32WriteIndex = 0, WriteIndex = 0;
 uint8_t TempDataBuf[256] ;
 uint8_t *pData;
-uint32_t ADCDataRaw[8];
+uint32_t ADCDataRaw[4];
 int flag = 1;
 //*****************************************************************************
 //
@@ -131,6 +131,11 @@ SysTickIntHandler(void)
 static uint32_t
 EchoNewDataToHost()
 {
+	/*
+	 * Function for sending the acquired ADC data to the laptop through USB
+	 * Fill the TxBuffer at once instead of one at a time as the pointer is reset on the function call each time.
+	 *
+	 */
 	uint_fast32_t ui32Space;
 	tUSBRingBufObject sTxRing;
 	WriteIndex = 0;
@@ -285,7 +290,11 @@ RxHandler(void *pvCBData, uint32_t ui32Event, uint32_t ui32MsgValue,
 
 
 void ADCDataGet()
-{
+{	/*
+	 * Interrupt for sample sequencer of ADC
+	 * clear the ADC interrupt flag at the beginning of each interrupt service routine
+	 * Also, declare the function name in startup_ccs file
+	 */
 
 	ADCIntClear(ADC0_BASE, 0);
 	ADCSequenceDataGet(ADC0_BASE, 0, ADCDataRaw);
@@ -296,14 +305,20 @@ void ADCDataGet()
 void WriteToBuffer()
 {
 	int y;
-	for ( y = 0; y < 8; y++)
+	/*
+	 * Function for writing the ADC data to a temporary buffer till 256 bytes are stored
+	 */
+
+
+	for ( y = 0; y <= 2; y=y+2) 	/*For test function, using only two values corresponding to channel 1 and 2 */
 	{
-		TempDataBuf[WriteIndex] = ADCDataRaw[y]%64;
+		TempDataBuf[WriteIndex] = ADCDataRaw[y]%64;		// Encoding for channel 1 LSB & MSB
 		TempDataBuf[WriteIndex+1] = ADCDataRaw[y]>>6;
-		if (y%2 == 1)
+		TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b01000000;
+		if (y == 2)		//Encoding for channel 2 LSB and MSB
 		{
-			TempDataBuf[WriteIndex] = TempDataBuf[WriteIndex] | 0b01000000;
-			TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b01000000;
+			TempDataBuf[WriteIndex] = TempDataBuf[WriteIndex] | 0b10000000;
+			TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b10000000;
 		}
 		WriteIndex = WriteIndex+2;
 	}
@@ -323,7 +338,7 @@ void ADCInit()
 
 	/*Configure ADC Peripheral*/
 	ADCSequenceDisable(ADC0_BASE, 0); //Before Configuring ADC Sequencer 1, it should be OFF
-	ADCClockConfigSet(ADC0_BASE, ADC_CLOCK_SRC_PIOSC| ADC_CLOCK_RATE_HALF, 1);
+	ADCClockConfigSet(ADC0_BASE, ADC_CLOCK_SRC_PIOSC| ADC_CLOCK_RATE_FULL, 1);
 	/*Configure ADC Sequence*/
 	ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_ALWAYS, 0);
 	ADCSequenceStepConfigure(ADC0_BASE, 0, 0, ADC_CTL_CH3); //Sequencer Step 0
@@ -417,7 +432,7 @@ main(void)
    			WriteToBuffer();
    			flag = 0;
     	}
-    	if (WriteIndex >=  BULK_BUFFER_SIZE)
+    	if (WriteIndex >=  (BULK_BUFFER_SIZE-1))
     	{
     		EchoNewDataToHost();
     		SysCtlDelay(200);
