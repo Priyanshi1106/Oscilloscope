@@ -1,0 +1,56 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/systick.h"
+#include "driverlib/ssi.h"
+#include "driverlib/timer.h"
+#include "driverlib/pin_map.h"
+
+
+void main()
+{
+
+
+	SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN |
+            SYSCTL_XTAL_25MHZ);
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOM);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER3);
+
+	GPIOPinConfigure(GPIO_PM3_T3CCP1);
+	GPIOPinTypeTimer(GPIO_PORTM_BASE, GPIO_PIN_3);
+
+	TimerConfigure(TIMER3_BASE, TIMER_CFG_SPLIT_PAIR | TIMER_CFG_B_PWM);
+	TimerLoadSet(TIMER3_BASE, TIMER_B, 5000);
+
+	TimerMatchSet(TIMER3_BASE, TIMER_B, 3500);
+	
+	TimerEnable(TIMER3_BASE, TIMER_B);
+
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_SSI3);
+
+	GPIOPinTypeSSI(GPIO_PORTF_BASE, GPIO_PIN_3|GPIO_PIN_1|GPIO_PIN_2);
+	GPIOPinConfigure(GPIO_PF3_SSI3CLK);
+	GPIOPinConfigure(GPIO_PF1_SSI3XDAT0);
+
+	SSIConfigSetExpClk(SSI3_BASE, 25000000, SSI_FRF_MOTO_MODE_0, SSI_MODE_MASTER, 2000000, 16);
+	SSIEnable(SSI3_BASE);
+
+	SSIDataPut(SSI3_BASE, 0x2100);
+	SSIDataPut(SSI3_BASE, 0xbb1d);
+	SSIDataPut(SSI3_BASE, 0x8001);
+	SSIDataPut(SSI3_BASE, 0xC000);
+	SSIDataPut(SSI3_BASE, 0x2000);
+
+	while (1)
+	{
+
+	}
+}
