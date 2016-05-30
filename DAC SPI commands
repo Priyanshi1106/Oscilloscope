@@ -1,0 +1,80 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/systick.h"
+#include "driverlib/ssi.h"
+#include "driverlib/timer.h"
+#include "driverlib/pin_map.h"
+
+//*****************************************************************************
+#define SYSTICKS_PER_SECOND 100
+#define SYSTICK_PERIOD_MS   (1000 / SYSTICKS_PER_SECOND)
+
+//*****************************************************************************
+//
+// The global system tick counter.
+//
+//*****************************************************************************
+volatile uint32_t g_ui32SysTickCount = 0;
+
+void
+SysTickIntHandler(void)
+{
+    //
+    // Update our system tick counter.
+    //
+    g_ui32SysTickCount++;
+}
+
+
+void main()
+{
+
+	SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN |
+            SYSCTL_XTAL_25MHZ);
+
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOL);
+    GPIOPinTypeGPIOOutput(GPIO_PORTL_BASE, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2); // Enable Chip select pins
+   	GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2); 	//Disable all SPI ICs
+
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_SSI2);		//enable SPI pins
+	int x = SYSCTL_PERIPH_SSI0; //dummy statement for waiting to initialise
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD);
+
+	GPIOPinTypeSSI(GPIO_PORTD_BASE, GPIO_PIN_3|GPIO_PIN_2|GPIO_PIN_1);  //Enable Alternate functionality
+
+	GPIOPadConfigSet(GPIO_PORTD_BASE, GPIO_PIN_1, GPIO_STRENGTH_4MA, GPIO_PIN_TYPE_STD_WPU);  //Configure pads
+	GPIOPadConfigSet(GPIO_PORTD_BASE, GPIO_PIN_3|GPIO_PIN_2, GPIO_STRENGTH_4MA, GPIO_PIN_TYPE_STD);
+
+	GPIOPinConfigure(GPIO_PD3_SSI2CLK);
+	GPIOPinConfigure(GPIO_PD2_SSI2FSS);
+	GPIOPinConfigure(GPIO_PD1_SSI2XDAT0);
+
+  /* Mode 2 is must for DAC, keep speed below 1Meg */
+	SSIConfigSetExpClk(SSI2_BASE, 25000000, SSI_FRF_MOTO_MODE_2, SSI_MODE_MASTER, 500000, 16);
+	SSIEnable(SSI2_BASE);
+
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+	GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_2|GPIO_PIN_3); 		//Setting for MUX OUTA = AX, OUTB = BY
+	GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_3);
+
+	while (1)
+	{
+		uint32_t x, dataval = 0xC000;
+		for (x=0; x<15; x++)
+		{
+			dataval = dataval+0x0100;
+			GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_2, 0);
+			SSIDataPut(SSI2_BASE, dataval);
+			SysCtlDelay(350);
+			GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_2, GPIO_PIN_2);
+		}
+	}
+}
