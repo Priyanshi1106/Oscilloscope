@@ -493,6 +493,6 @@ main(void)
     		EchoNewDataToHost();
     		SysCtlDelay(200);
     	}
-
+	SysCtlDelay(300);
     }
 }
