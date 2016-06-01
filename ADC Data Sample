@@ -1,46 +1,331 @@
+//*****************************************************************************
+//
+// usb_dev_bulk.c - Main routines for the generic bulk device example.
+//
+// Copyright (c) 2013-2014 Texas Instruments Incorporated.  All rights reserved.
+// Software License Agreement
+//
+// Texas Instruments (TI) is supplying this software for use solely and
+// exclusively on TI's microcontroller products. The software is owned by
+// TI and/or its suppliers, and is protected under applicable copyright
+// laws. You may not combine this software with "viral" open-source
+// software in order to form a larger program.
+//
+// THIS SOFTWARE IS PROVIDED "AS IS" AND WITH ALL FAULTS.
+// NO WARRANTIES, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT
+// NOT LIMITED TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. TI SHALL NOT, UNDER ANY
+// CIRCUMSTANCES, BE LIABLE FOR SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
+// DAMAGES, FOR ANY REASON WHATSOEVER.
+//
+// This is part of revision 2.1.0.12573 of the EK-TM4C1294XL Firmware Package.
+//
+//*****************************************************************************
+
 #include <stdbool.h>
 #include <stdint.h>
 #include "inc/hw_ints.h"
 #include "inc/hw_memmap.h"
 #include "inc/hw_types.h"
-#include "driverlib/gpio.h"
 #include "driverlib/interrupt.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/systick.h"
+#include "driverlib/rom.h"
+#include "driverlib/rom_map.h"
+#include "usblib/usblib.h"
+#include "usblib/usb-ids.h"
+#include "usblib/device/usbdevice.h"
+#include "usblib/device/usbdbulk.h"
 #include "utils/uartstdio.h"
 #include "utils/ustdlib.h"
-#include "driverlib/pin_map.h"
+#include "drivers/pinout.h"
+#include "usb_bulk_structs.h"
 #include "driverlib/adc.h"
+#include "driverlib/gpio.h"
+#include "driverlib/timer.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/ssi.h"
 
-uint32_t ADCData[8];
+//*****************************************************************************
+//
+// The system tick rate expressed both as ticks per second and a millisecond
+// period.
+//
+//*****************************************************************************
+#define SYSTICKS_PER_SECOND 100
+#define SYSTICK_PERIOD_MS   (1000 / SYSTICKS_PER_SECOND)
+#define HALF_BUFFER 127
+//*****************************************************************************
+//
+// The global system tick counter.
+//
+//*****************************************************************************
+volatile uint32_t g_ui32SysTickCount = 0;
+
+//*****************************************************************************
+//
+// Variables tracking transmit and receive counts.
+//
+//*****************************************************************************
+volatile uint32_t g_ui32TxCount = 0;
+volatile uint32_t g_ui32RxCount = 0;
+
+//*****************************************************************************
+//
+// Flags used to pass commands from interrupt context to the main loop.
+//
+//*****************************************************************************
+#define COMMAND_PACKET_RECEIVED 0x00000001
+#define COMMAND_STATUS_UPDATE   0x00000002
+
+volatile uint32_t g_ui32Flags = 0;
+uint32_t ui32Count = 0;
+uint_fast32_t ui32WriteIndex = 0, WriteIndex = 0;
+uint8_t TempDataBuf[256] ;
+uint8_t *pData;
+uint32_t ADCDataRaw[4];
 int flag = 1;
+//*****************************************************************************
+//
+// Global flag indicating that a USB configuration has been set.
+//
+//*****************************************************************************
+static volatile bool g_bUSBConfigured = false;
 
-void StdioInit()
+
+
+void ADCInit(void);
+void WriteToBuffer(void);
+void ADCDataGet(void);
+
+//*****************************************************************************
+//
+// Interrupt handler for the system tick counter.
+//
+//*****************************************************************************
+void
+SysTickIntHandler(void)
 {
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
-
-	GPIOPinConfigure(GPIO_PA0_U0RX);
-	GPIOPinConfigure(GPIO_PA1_U0TX);
-	GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-
-	UARTStdioConfig(0, 115200, 25000000);
+    //
+    // Update our system tick counter.
+    //
+    g_ui32SysTickCount++;
 }
+
+//*****************************************************************************
+//
+// Receive new data and echo it back to the host.
+//
+// \param psDevice points to the instance data for the device whose data is to
+// be processed.
+// \param pi8Data points to the newly received data in the USB receive buffer.
+// \param ui32NumBytes is the number of bytes of data available to be
+// processed.
+//
+// This function is called whenever we receive a notification that data is
+// available from the host. We read the data, byte-by-byte and swap the case
+// of any alphabetical characters found then write it back out to be
+// transmitted back to the host.
+//
+// \return Returns the number of bytes of data processed.
+//
+//*****************************************************************************
+static uint32_t
+EchoNewDataToHost()
+{
+	/*
+	 * Function for sending the acquired ADC data to the laptop through USB
+	 * Fill the TxBuffer at once instead of one at a time as the pointer is reset on the function call each time.
+	 *
+	 */
+	uint_fast32_t ui32Space;
+	tUSBRingBufObject sTxRing;
+	WriteIndex = 0;
+	    //
+	    // Get the current buffer information to allow us to write directly to
+	    // the transmit buffer (we already have enough information from the
+	    // parameters to access the receive buffer directly).
+	    //
+    USBBufferInfoGet(&g_sTxBuffer, &sTxRing);
+
+	    //
+	    // How much space is there in the transmit buffer?
+	    //
+    ui32Space = USBBufferSpaceAvailable(&g_sTxBuffer);
+
+//    ui32WriteIndex = sTxRing.ui32WriteIndex;
+
+    SysCtlDelay(100);
+
+    while(ui32WriteIndex < BULK_BUFFER_SIZE)
+    {
+    	pData = &TempDataBuf[WriteIndex];
+    	g_pui8USBTxBuffer[ui32WriteIndex] = *pData;
+
+	    ui32WriteIndex++ ;
+	    WriteIndex++;
+    }
+
+    ui32Count = ui32WriteIndex;
+
+
+    //
+    // We've processed the data in place so now send the processed data
+    // back to the host.
+    //
+    USBBufferDataWritten(&g_sTxBuffer, ui32Count);
+    SysCtlDelay(200);
+    if (ui32WriteIndex >= BULK_BUFFER_SIZE)
+    {
+    	ui32WriteIndex = 0;
+    	WriteIndex = 0;
+    	ui32Count = 0;
+    }
+    USBBufferFlush(&g_sTxBuffer);
+    //
+    // We processed as much data as we can directly from the receive buffer so
+    // we need to return the number of bytes to allow the lower layer to
+    // update its read pointer appropriately.
+    //
+    return(ui32Count);
+}
+
+//*****************************************************************************
+//
+// Handles bulk driver notifications related to the transmit channel (data to
+// the USB host).
+//
+// \param pvCBData is the client-supplied callback pointer for this channel.
+// \param ulEvent identifies the event we are being notified about.
+// \param ulMsgValue is an event-specific value.
+// \param pvMsgData is an event-specific pointer.
+//
+// This function is called by the bulk driver to notify us of any events
+// related to operation of the transmit data channel (the IN channel carrying
+// data to the USB host).
+//
+// \return The return value is event-specific.
+//
+//*****************************************************************************
+uint32_t
+TxHandler(void *pvCBData, uint32_t ui32Event, uint32_t ui32MsgValue,
+          void *pvMsgData)
+{
+
+    return(0);
+}
+
+//*****************************************************************************
+//
+// Handles bulk driver notifications related to the receive channel (data from
+// the USB host).
+//
+// \param pvCBData is the client-supplied callback pointer for this channel.
+// \param ui32Event identifies the event we are being notified about.
+// \param ui32MsgValue is an event-specific value.
+// \param pvMsgData is an event-specific pointer.
+//
+// This function is called by the bulk driver to notify us of any events
+// related to operation of the receive data channel (the OUT channel carrying
+// data from the USB host).
+//
+// \return The return value is event-specific.
+//
+//*****************************************************************************
+uint32_t
+RxHandler(void *pvCBData, uint32_t ui32Event, uint32_t ui32MsgValue,
+          void *pvMsgData)
+{
+    //
+    // Which event are we being sent?
+    //
+    switch(ui32Event)
+    {
+        //
+        // We are connected to a host and communication is now possible.
+        //
+        case USB_EVENT_CONNECTED:
+        {
+            g_bUSBConfigured = true;
+            g_ui32Flags |= COMMAND_STATUS_UPDATE;
+
+            //
+            // Flush our buffers.
+            //
+            USBBufferFlush(&g_sTxBuffer);
+            USBBufferFlush(&g_sRxBuffer);
+
+            break;
+        }
+
+        //
+        // The host has disconnected.
+        //
+        case USB_EVENT_DISCONNECTED:
+        {
+            g_bUSBConfigured = false;
+            g_ui32Flags |= COMMAND_STATUS_UPDATE;
+            break;
+        }
+
+        //
+        // A new packet has been received.
+        //
+        case USB_EVENT_RX_AVAILABLE:
+
+        //
+        // Ignore SUSPEND and RESUME for now.
+        //
+        case USB_EVENT_SUSPEND:
+        case USB_EVENT_RESUME:
+            break;
+
+        //
+        // Ignore all other events and return 0.
+        //
+        default:
+            break;
+    }
+
+    return(0);
+}
+
 
 void ADCDataGet()
-{
+{	/*
+	 * Interrupt for sample sequencer of ADC
+	 * clear the ADC interrupt flag at the beginning of each interrupt service routine
+	 * Also, declare the function name in startup_ccs file
+	 */
 
 	ADCIntClear(ADC0_BASE, 0);
-	ADCSequenceDataGet(ADC0_BASE, 0, ADCData);
+	ADCSequenceDataGet(ADC0_BASE, 0, ADCDataRaw);
 	flag = 1;
-
-
-
-	//ADCIntEnable(ADC0_BASE, 0);
 
 }
 
+void WriteToBuffer()
+{
+	int y;
+	/*
+	 * Function for writing the ADC data to a temporary buffer till 256 bytes are stored
+	 */
 
+
+	for ( y = 0; y <= 2; y=y+2) 	/*For test function, using only two values corresponding to channel 1 and 2 */
+	{
+		TempDataBuf[WriteIndex] = ADCDataRaw[y]%64;		// Encoding for channel 1 LSB & MSB
+		TempDataBuf[WriteIndex+1] = ADCDataRaw[y]>>6;
+		TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b01000000;
+		if (y == 2)		//Encoding for channel 2 LSB and MSB
+		{
+			TempDataBuf[WriteIndex] = TempDataBuf[WriteIndex] | 0b10000000;
+			TempDataBuf[WriteIndex+1] = TempDataBuf[WriteIndex+1] | 0b10000000;
+		}
+		WriteIndex = WriteIndex+2;
+	}
+
+}
 //***********************ADC Initialise **********************
 
 
@@ -55,9 +340,10 @@ void ADCInit()
 
 	/*Configure ADC Peripheral*/
 	ADCSequenceDisable(ADC0_BASE, 0); //Before Configuring ADC Sequencer 1, it should be OFF
-	ADCClockConfigSet(ADC0_BASE, ADC_CLOCK_SRC_PIOSC| ADC_CLOCK_RATE_HALF, 1);
+	ADCClockConfigSet(ADC0_BASE, ADC_CLOCK_SRC_PIOSC, 1);
+
 	/*Configure ADC Sequence*/
-	ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_ALWAYS, 0);
+	ADCSequenceConfigure(ADC0_BASE, 0, ADC_TRIGGER_TIMER, 0);
 	ADCSequenceStepConfigure(ADC0_BASE, 0, 0, ADC_CTL_CH3); //Sequencer Step 0
 	ADCSequenceStepConfigure(ADC0_BASE, 0, 1, ADC_CTL_CH2); //Sequencer Step 1
 	ADCSequenceStepConfigure(ADC0_BASE, 0, 2, ADC_CTL_CH1); //Sequencer Step 2
@@ -66,6 +352,22 @@ void ADCInit()
 	/*Enable ADC sequence*/
 
 	ADCSequenceEnable(ADC0_BASE, 0);
+
+
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOM);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER5);
+
+	GPIOPinConfigure(GPIO_PM7_T5CCP1);
+	GPIOPinTypeTimer(GPIO_PORTM_BASE, GPIO_PIN_7);
+
+	TimerConfigure(TIMER5_BASE, TIMER_CFG_SPLIT_PAIR|TIMER_CFG_B_PERIODIC);
+	TimerLoadSet(TIMER5_BASE, TIMER_B, 120);
+
+//	TimerMatchSet(TIMER5_BASE, TIMER_B, 59);
+	TimerControlTrigger(TIMER5_BASE, TIMER_B, true);
+//	TimerADCEventSet(TIMER5_BASE, TIMER_ADC_TIMEOUT_B);
+	TimerEnable(TIMER5_BASE, TIMER_B);
+
 	ADCIntDisable(ADC0_BASE, 0);
 
 	ADCIntRegister(ADC0_BASE, 0, ADCDataGet );
@@ -73,30 +375,124 @@ void ADCInit()
 	/*Clear ADC Interrupt*/
 	ADCIntClear(ADC0_BASE, 0);
 	ADCIntEnable(ADC0_BASE, 0);
+	IntEnable(INT_ADC0SS0);
 	IntMasterEnable();
 
 }
 
-void main()
+InitSPI(){
+
+	/*****************SPI Chip Select ******************************/
+	    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOL);
+	    GPIOPinTypeGPIOOutput(GPIO_PORTL_BASE, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2); // Enable Chip select pins
+	   	GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2); 	//Disable all SPI ICs
+
+		SysCtlPeripheralEnable(SYSCTL_PERIPH_SSI2);		//enable SPI pins
+		int x = SYSCTL_PERIPH_SSI0;
+		SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD);
+
+		GPIOPinTypeSSI(GPIO_PORTD_BASE, GPIO_PIN_3|GPIO_PIN_2|GPIO_PIN_1);
+
+		GPIOPadConfigSet(GPIO_PORTD_BASE, GPIO_PIN_1, GPIO_STRENGTH_4MA, GPIO_PIN_TYPE_STD_WPU);
+		GPIOPadConfigSet(GPIO_PORTD_BASE, GPIO_PIN_3|GPIO_PIN_2, GPIO_STRENGTH_4MA, GPIO_PIN_TYPE_STD);
+
+		GPIOPinConfigure(GPIO_PD3_SSI2CLK);
+		GPIOPinConfigure(GPIO_PD2_SSI2FSS);
+		GPIOPinConfigure(GPIO_PD1_SSI2XDAT0);
+
+		SSIConfigSetExpClk(SSI2_BASE, 25000000, SSI_FRF_MOTO_MODE_0, SSI_MODE_MASTER, 500000, 16);
+		SSIEnable(SSI2_BASE);
+
+		/***********Set the MUX output*******************/
+		SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+		GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_2|GPIO_PIN_3); 		//Setting for MUX OUTA = AX, OUTB = BY
+		GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_2|GPIO_PIN_3);
+
+		/*****************Set the PGA gain************************/
+		GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_1, 0);
+		SSIDataPut(SSI2_BASE, 0x2A10);   //Gain is second last nibble
+		SysCtlDelay(350);
+		GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_1, GPIO_PIN_1);
+
+		SSIDisable(SSI2_BASE);
+		SSIConfigSetExpClk(SSI2_BASE, 25000000, SSI_FRF_MOTO_MODE_2, SSI_MODE_MASTER, 500000, 16);
+		SSIEnable(SSI2_BASE);
+
+		//dataval = dataval+0x0100;
+		GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_2, 0);
+		SSIDataPut(SSI2_BASE, 0xc100);
+		SysCtlDelay(350);
+		GPIOPinWrite(GPIO_PORTL_BASE, GPIO_PIN_2, GPIO_PIN_2);
+
+}
+
+
+//*****************************************************************************
+//
+// This is the main application entry function.
+//
+//*****************************************************************************
+int
+main(void)
 {
+    uint32_t ui32SysClock;
 
-	SysCtlClockSet(SYSCTL_SYSDIV_4 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN |
-            SYSCTL_XTAL_25MHZ);
-
-	StdioInit();
-	ADCInit();
-
-	UARTprintf("Channel 1");
-
-	while (1)
-	{
-		if (flag == 1)
-		{
-
-			UARTprintf("%d\n", ADCData);
-			flag = 0;
-		}
-	}
+    //
+    // Run from the PLL at 120 MHz.
+    //
 
 
+   ui32SysClock = MAP_SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
+                                           SYSCTL_OSC_MAIN |
+                                           SYSCTL_USE_PLL |
+                                           SYSCTL_CFG_VCO_480), 120000000);
+
+    //
+    // Configure the device pins.
+    //
+    PinoutSet(false, true);
+
+    InitSPI();
+    //
+    // Enable the system tick.
+    //
+    SysTickPeriodSet(ui32SysClock / SYSTICKS_PER_SECOND);
+    SysTickIntEnable();
+    SysTickEnable();
+
+    //
+    // Initialize the transmit and receive buffers.
+    //
+    USBBufferInit(&g_sTxBuffer);
+    USBBufferInit(&g_sRxBuffer);
+
+    //
+    // Initialize the USB stack for device mode.
+    //
+    USBStackModeSet(0, eUSBModeForceDevice, 0);
+
+    //
+    // Pass our device information to the USB library and place the device
+    // on the bus.
+    //
+    USBDBulkInit(0, &g_sBulkDevice);
+
+    ADCInit();
+
+
+    while(1)
+    {
+    	if (flag == 1)
+    	{
+
+   			WriteToBuffer();
+   			flag = 0;
+    	}
+    	if (WriteIndex >=  (BULK_BUFFER_SIZE-1))		//try to send individual data
+    	{
+    		EchoNewDataToHost();
+    		SysCtlDelay(200);
+    	}
+	SysCtlDelay(300);
+    }
 }
