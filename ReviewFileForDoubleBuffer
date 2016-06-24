@@ -147,7 +147,7 @@ EchoNewDataToHost(uint32_t Flag)
     else if (Flag == 0){
     	while (ReadIndex <= 256){
 
-    		g_pui8USBTxBuffer[ui32WriteIndex] = TempDataBuf[ReadIndex];
+    		g_pui8USBTxBuffer[ui32WriteIndex] = DoubleDataBuf[ReadIndex];
 
     		ui32WriteIndex++ ;
     		ReadIndex++;
